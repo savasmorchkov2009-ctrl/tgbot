@@ -795,6 +795,8 @@ async def handle_admin_decision(update: Update, context: ContextTypes.DEFAULT_TY
         if conn:
             conn.close()
 
+# ... (весь предыдущий код до строки ~820 остается БЕЗ ИЗМЕНЕНИЙ) ...
+
 async def admin_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик callback кнопок админки"""
     query = update.callback_query
@@ -821,5 +823,434 @@ async def admin_callback_handler(update: Update, context: ContextTypes.DEFAULT_T
     elif data == "admin_back":
         await admin_panel(update, context)
     elif data.startswith('admin_details_'):
+        await show_request_details_admin(update, context)
+    elif data.startswith('admin_approve_') or data.startswith('admin_reject_'):
+        await handle_admin_decision(update, context)
+    else:
+        await query.edit_message_text("❌ Неизвестная команда")
+        logger.warning(f"Неизвестный callback data: {data}")
 
+# ==================== ОСНОВНЫЕ КОМАНДЫ БОТА ====================
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда /start"""
+    user = update.effective_user
+    keyboard = [
+        [KeyboardButton("🎁 Бонус за отзыв ⭐⭐⭐⭐⭐")],
+        [KeyboardButton("📝 Отзыв в VK")],
+        [KeyboardButton("🔍 Отзыв в Яндексе")],
+        [KeyboardButton("🗺️ Отзыв в 2ГИС")]
+    ]
+    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+    welcome_text = f"""Здравствуйте! 😊
 
+Добро пожаловать в бот для получения бонусов!
+Размер приза от 150 до 200 рублей! 💰
+    """
+    await update.message.reply_text(welcome_text, reply_markup=reply_markup)
+    context.user_data.clear()
+    context.user_data['user_id'] = user.id
+    context.user_data['username'] = user.username
+    context.user_data['full_name'] = f"{user.first_name} {user.last_name or ''}".strip()
+    return ConversationHandler.END
+
+async def handle_platform_review(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка кнопок отзывов на платформах"""
+    text = update.message.text
+    if text == "📝 Отзыв в VK":
+        await update.message.reply_text(
+            f"📝 **Оставить отзыв в VK:**\n\n{VK_REVIEW_LINK}\n\n"
+            f"После отзыва нажмите '🎁 Бонус за отзыв ⭐⭐⭐⭐⭐'!",
+            parse_mode='Markdown'
+        )
+    elif text == "🔍 Отзыв в Яндексе":
+        await update.message.reply_text(
+            f"🔍 **Оставить отзыв в Яндекс:**\n\n{YANDEX_REVIEW_LINK}\n\n"
+            f"После отзыва нажмите '🎁 Бонус за отзыв ⭐⭐⭐⭐⭐'!",
+            parse_mode='Markdown'
+        )
+    elif text == "🗺️ Отзыв в 2ГИС":
+        await update.message.reply_text(
+            f"🗺️ **Оставить отзыв в 2ГИС:**\n\n{TWOGIS_REVIEW_LINK}\n\n"
+            f"После отзыва нажмите '🎁 Бонус за отзыв ⭐⭐⭐⭐⭐'!",
+            parse_mode='Markdown'
+        )
+    return ConversationHandler.END
+
+async def bonus_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик кнопки бонуса"""
+    instruction_text = """
+📱 **Как получить бонус:**
+
+1. Оставьте отзыв на ⭐⭐⭐⭐⭐
+2. Сделайте скриншот
+3. Отправьте скриншот сюда
+
+Приз: 150-200 рублей!
+
+Отправьте скриншот отзыва:
+    """
+    await update.message.reply_text(instruction_text, parse_mode='Markdown')
+    return WAITING_FOR_REVIEW
+
+async def handle_review_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка скриншота"""
+    user = update.effective_user
+    bot = context.bot
+    
+    try:
+        file_id = None
+        filename = None
+        
+        if update.message.photo:
+            photo = update.message.photo[-1]
+            file_id = photo.file_id
+            filename = await download_file(bot, file_id, user.id)
+        elif update.message.document:
+            document = update.message.document
+            file_id = document.file_id
+            filename = await download_file(bot, file_id, user.id)
+        
+        if file_id:
+            context.user_data['file_id'] = file_id
+            context.user_data['file_path'] = filename
+            prize_amount = random.randint(150, 200)
+            context.user_data['prize_amount'] = prize_amount
+            
+            prize_text = f"""
+✅ **Отличная работа!**
+
+🎉 **Ваш выигрыш: {prize_amount} рублей!**
+
+Отправьте номер телефона:
+`+7XXXXXXXXXX` или `8XXXXXXXXXX`
+
+Пример: +79123456789
+            """
+            await update.message.reply_text(prize_text, parse_mode='Markdown')
+            return WAITING_FOR_PHONE
+        else:
+            await update.message.reply_text("❌ Отправьте скриншот в виде фото или документа.")
+            return WAITING_FOR_REVIEW
+            
+    except Exception as e:
+        logger.error(f"Ошибка обработки файла: {e}")
+        await update.message.reply_text("❌ Ошибка. Попробуйте еще раз.")
+        return WAITING_FOR_REVIEW
+
+async def handle_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка номера телефона"""
+    phone = update.message.text.strip()
+    
+    if (phone.startswith('+7') and len(phone) == 12 and phone[1:].isdigit()) or \
+       (phone.startswith('8') and len(phone) == 11 and phone.isdigit()) or \
+       (phone.startswith('7') and len(phone) == 11 and phone.isdigit()):
+        
+        context.user_data['phone'] = phone
+        bank_text = """
+📋 **Отлично! Укажите ваш банк:**
+
+Например:
+- Сбербанк
+- Тинькофф
+- Альфа-Банк
+- ВТБ
+- или другой банк
+
+Отправьте название банка:
+        """
+        await update.message.reply_text(bank_text, parse_mode='Markdown')
+        return WAITING_FOR_BANK
+    else:
+        await update.message.reply_text(
+            "❌ Неверный формат номера.\n"
+            "Правильный формат: `+7XXXXXXXXXX` или `8XXXXXXXXXX`\n"
+            "Пример: +79123456789",
+            parse_mode='Markdown'
+        )
+        return WAITING_FOR_PHONE
+
+async def handle_bank(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка названия банка и завершение заявки"""
+    bank = update.message.text.strip()
+    context.user_data['bank'] = bank
+    
+    # Собираем все данные
+    user_data = {
+        'user_id': context.user_data['user_id'],
+        'username': context.user_data.get('username'),
+        'full_name': context.user_data.get('full_name'),
+        'phone': context.user_data['phone'],
+        'bank': bank,
+        'prize_amount': context.user_data['prize_amount'],
+        'timestamp': datetime.now(),
+        'file_path': context.user_data.get('file_path')
+    }
+    
+    # Сохраняем в БД и получаем ID заявки
+    request_id = add_request(user_data)
+    
+    if request_id:
+        # Отправляем заявку администратору
+        await send_to_admin(context.bot, user_data, request_id)
+        
+        # Сообщение пользователю
+        final_text = f"""
+🎊 **Заявка #{request_id} оформлена!**
+
+✅ **Данные:**
+- Сумма: {user_data['prize_amount']} рублей
+- Телефон: {user_data['phone']}
+- Банк: {user_data['bank']}
+
+⏳ **Обработка:**
+Заявка отправлена на проверку.
+Выплаты в течение 24 часов.
+
+💰 **Деньги будут переведены в течение 1-3 рабочих дней.**
+
+Спасибо! 🎉
+
+**Вы также можете оставить отзывы на других площадках!**
+        """
+    else:
+        final_text = "❌ Ошибка сохранения заявки. Попробуйте позже."
+    
+    await update.message.reply_text(final_text, parse_mode='Markdown')
+    await update.message.reply_text("Для нового бонуса нажмите /start", reply_markup=ReplyKeyboardRemove())
+    context.user_data.clear()
+    return ConversationHandler.END
+
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Отмена диалога"""
+    await update.message.reply_text("Диалог отменен. Для начала нажмите /start", reply_markup=ReplyKeyboardRemove())
+    context.user_data.clear()
+    return ConversationHandler.END
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда /help"""
+    help_text = """
+🤖 **Помощь по боту:**
+
+/start - Начать работу
+/myrequests - Мои заявки
+/status - Статус бота
+/help - Помощь
+
+Для получения бонуса:
+1. Нажмите "🎁 Бонус за отзыв ⭐⭐⭐⭐⭐"
+2. Отправьте скриншот
+3. Укажите телефон и банк
+
+**Команды администратора:**
+/admin - Панель администратора
+    """
+    await update.message.reply_text(help_text, parse_mode='Markdown')
+
+async def my_requests(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показать мои заявки"""
+    user_id = update.effective_user.id
+    
+    try:
+        conn = get_db_connection()
+        if not conn:
+            await update.message.reply_text("❌ Ошибка подключения к БД.")
+            return
+        
+        c = conn.cursor()
+        c.execute('''SELECT * FROM requests WHERE user_id = ? ORDER BY created_at DESC LIMIT 5''', (user_id,))
+        rows = c.fetchall()
+        conn.close()
+        
+        if not rows:
+            await update.message.reply_text("📭 У вас еще нет заявок.")
+            return
+        
+        text = "📋 **Ваши последние заявки:**\n\n"
+        for row in rows:
+            req_id, _, _, full_name, phone, bank, amount, _, status, created_at, *_ = row
+            created = datetime.strptime(created_at, '%Y-%m-%d %H:%M:%S') if isinstance(created_at, str) else created_at
+            
+            status_icons = {'pending': '⏳', 'approved': '✅', 'rejected': '❌'}
+            text += f"**Заявка #{req_id}** {status_icons.get(status, '❓')}\n"
+            text += f"💰 {amount} руб | 🏦 {bank}\n"
+            text += f"📅 {created.strftime('%d.%m.%Y %H:%M')}\n"
+            text += f"🔸 Статус: {status}\n"
+            text += "─" * 20 + "\n"
+        
+        await update.message.reply_text(text, parse_mode='Markdown')
+    except Exception as e:
+        logger.error(f"Ошибка получения заявок: {e}")
+        await update.message.reply_text("❌ Ошибка получения данных. Попробуйте позже.")
+
+async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда статуса бота"""
+    uptime = datetime.now() - bot_start_time
+    hours, remainder = divmod(uptime.seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    
+    status_text = f"""
+🤖 **Статус бота**
+
+✅ Бот работает
+⏱ Аптайм: {uptime.days}д {hours}ч {minutes}м
+🔄 Перезапусков: {bot_restart_count}
+📊 Заявок за сессию: {total_requests_this_session}
+📅 Время сервера: {datetime.now().strftime("%d.%m.%Y %H:%M:%S")}
+💾 Свободное место: {get_free_space()} ГБ
+    """
+    await update.message.reply_text(status_text, parse_mode='Markdown')
+
+# ==================== ГЛАВНАЯ ФУНКЦИЯ С АВТОПЕРЕЗАПУСКОМ ====================
+async def run_bot_forever():
+    """Основная функция с автоперезапуском"""
+    global bot_restart_count
+    
+    while True:
+        try:
+            logger.info(f"Запуск бота (попытка #{bot_restart_count + 1})")
+            
+            # Инициализация БД
+            if not init_database():
+                logger.error("Не удалось инициализировать БД. Повтор через 30 секунд...")
+                await asyncio.sleep(30)
+                continue
+            
+            # Создаем приложение
+            application = Application.builder().token(BOT_TOKEN).build()
+            
+            # Настраиваем планировщик задач для админа
+            job_queue = application.job_queue
+            if job_queue:
+                # Health check каждые 6 часов
+                job_queue.run_repeating(send_health_check, interval=21600, first=10)
+                # Автобэкап каждые 24 часа
+                job_queue.run_repeating(auto_backup, interval=86400, first=60)
+            
+            # Обработка кнопок платформ
+            application.add_handler(MessageHandler(
+                filters.TEXT & filters.Regex('^(📝 Отзыв в VK|🔍 Отзыв в Яндексе|🗺️ Отзыв в 2ГИС)$'), 
+                handle_platform_review
+            ))
+            
+            # Обработчик поиска от админа
+            application.add_handler(MessageHandler(
+                filters.TEXT & ~filters.COMMAND,
+                handle_admin_search
+            ))
+            
+            # ConversationHandler для основного диалога
+            conv_handler = ConversationHandler(
+                entry_points=[
+                    MessageHandler(filters.TEXT & filters.Regex('^🎁 Бонус за отзыв ⭐⭐⭐⭐⭐$'), bonus_button),
+                    CommandHandler('start', start)
+                ],
+                states={
+                    WAITING_FOR_REVIEW: [
+                        MessageHandler(filters.PHOTO | filters.Document.IMAGE, handle_review_screenshot),
+                        MessageHandler(filters.TEXT & ~filters.COMMAND, 
+                                      lambda u, c: u.message.reply_text("Отправьте скриншот отзыва"))
+                    ],
+                    WAITING_FOR_PHONE: [
+                        MessageHandler(filters.TEXT & ~filters.COMMAND, handle_phone)
+                    ],
+                    WAITING_FOR_BANK: [
+                        MessageHandler(filters.TEXT & ~filters.COMMAND, handle_bank)
+                    ],
+                },
+                fallbacks=[
+                    CommandHandler('cancel', cancel),
+                    CommandHandler('start', start),
+                    CommandHandler('help', help_command)
+                ],
+            )
+            
+            # Добавляем обработчики
+            application.add_handler(conv_handler)
+            application.add_handler(CommandHandler("help", help_command))
+            application.add_handler(CommandHandler("start", start))
+            application.add_handler(CommandHandler("myrequests", my_requests))
+            application.add_handler(CommandHandler("status", status_command))
+            application.add_handler(CommandHandler("admin", admin_panel))
+            
+            # Обработчики callback кнопок
+            application.add_handler(CallbackQueryHandler(admin_callback_handler, pattern="^admin_"))
+            application.add_handler(CallbackQueryHandler(handle_admin_decision, pattern="^admin_approve_|^admin_reject_"))
+            application.add_handler(CallbackQueryHandler(show_request_details_admin, pattern="^admin_details_"))
+            
+            # Запускаем бота
+            bot_restart_count += 1
+            logger.info(f"🤖 Бот запускается... (Перезапуск #{bot_restart_count})")
+            
+            # Отправляем уведомление админу о запуске
+            try:
+                startup_message = f"""
+🚀 **Бот запущен**
+
+✅ Бот успешно запущен
+🔄 Перезапуск #{bot_restart_count}
+⏰ Время запуска: {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}
+                """
+                await application.bot.send_message(
+                    chat_id=ADMIN_ID,
+                    text=startup_message,
+                    parse_mode='Markdown'
+                )
+            except Exception as e:
+                logger.error(f"Не удалось отправить уведомление о запуске: {e}")
+            
+            # Основной цикл работы бота
+            await application.run_polling()
+            
+        except KeyboardInterrupt:
+            logger.info("Бот остановлен пользователем")
+            sys.exit(0)
+            
+        except Exception as e:
+            logger.critical(f"КРИТИЧЕСКАЯ ОШИБКА: {e}", exc_info=True)
+            
+            # Отправляем уведомление админу об ошибке
+            try:
+                error_message = f"""
+🔴 **Бот упал с ошибкой**
+
+❌ Ошибка: {str(e)[:200]}
+🔄 Перезапуск через 30 секунд...
+📅 Время: {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}
+                """
+                # Используем requests для отправки, если бот не работает
+                import requests
+                requests.post(
+                    f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+                    json={
+                        "chat_id": ADMIN_ID,
+                        "text": error_message,
+                        "parse_mode": "Markdown"
+                    },
+                    timeout=10
+                )
+            except:
+                pass
+            
+            # Ждем перед перезапуском
+            logger.info("Перезапуск через 30 секунд...")
+            await asyncio.sleep(30)
+
+def main():
+    """Точка входа в программу"""
+    print("\n" + "="*60)
+    print("🤖 TELEGRAM BOT 24/7")
+    print("="*60)
+    print(f"👑 Админ ID: {ADMIN_ID}")
+    print(f"📁 Лог файл: bot_24_7.log")
+    print(f"💾 База данных: requests.db")
+    print(f"🖼️ Скриншоты: {SCREENSHOTS_FOLDER}")
+    print("="*60)
+    print("🚀 Запускаем бота с автоперезапуском...")
+    print("⚠️  Для остановки нажмите Ctrl+C")
+    print("="*60 + "\n")
+    
+    # Запускаем бесконечный цикл
+    asyncio.run(run_bot_forever())
+
+if __name__ == '__main__':
+    main()
