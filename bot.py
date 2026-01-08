@@ -19,7 +19,7 @@ from telegram.ext import (
 )
 
 # ==================== НАСТРОЙКИ ====================
-BOT_TOKEN = "8322482027:AAHvBrXcwDKhOQKiB2-pViaKlhPtecynKBg"  # ЗАМЕНИТЕ
+BOT_TOKEN = "5932864783:AAFbN42qyJBtbuyqo3wD2i2I3OTKEdpq1qI"  # ЗАМЕНИТЕ
 ADMIN_ID = 5189651311  # ЗАМЕНИТЕ на ваш Telegram ID
 
 # Ссылки для кнопок отзывов
@@ -821,4 +821,5 @@ async def admin_callback_handler(update: Update, context: ContextTypes.DEFAULT_T
     elif data == "admin_back":
         await admin_panel(update, context)
     elif data.startswith('admin_details_'):
+
 
