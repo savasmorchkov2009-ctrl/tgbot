@@ -144,7 +144,7 @@ async def start_command(message: types.Message):
         [InlineKeyboardButton(text="⭐ Бонус за отзыв", callback_data="bonus")],
         [InlineKeyboardButton(text="📘 Отзыв в VK", url="https://clck.ru/3QTvTp")],
         [InlineKeyboardButton(text="🌐 Отзыв в Яндексе", url="https://clck.ru/3QTRfj")],
-        [InlineKeyboardButton(text="🗺️ Отзыв в 2ГИС", url="https://clck.ru/3QsAsL)]
+        [InlineKeyboardButton(text="🗺️ Отзыв в 2ГИС", url="https://clck.ru/3QsAsL")]
     ])
     
     text = """Здравствуйте! 😊
@@ -498,3 +498,4 @@ if __name__ == '__main__':
         logger.info("Бот остановлен вручную")
     except Exception as e:
         logger.error(f"Необработанная ошибка: {e}")
+
