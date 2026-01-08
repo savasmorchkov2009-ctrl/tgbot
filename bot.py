@@ -17,18 +17,9 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # === НАСТРОЙКИ ===
-# Вставьте сюда ваш токен и ID администратора
-BOT_TOKEN = "5932864783:AAFbN42qyJBtbuyqo3wD2i2I3OTKEdpq1qI"  # Замените на ваш токен
-ADMIN_ID = 5189651311  # Замените на ваш Telegram ID (цифры без кавычек)
-
-# Проверка настроек
-if BOT_TOKEN == "ВАШ_ТОКЕН_БОТА":
-    logger.error("❌ ЗАМЕНИТЕ BOT_TOKEN НА ВАШ ТОКЕН!")
-    exit()
-
-if ADMIN_ID == ВАШ_ID_АДМИНА:
-    logger.error("❌ ЗАМЕНИТЕ ADMIN_ID НА ВАШ TELEGRAM ID!")
-    exit()
+# ЗАМЕНИТЕ ЭТИ ЗНАЧЕНИЯ НА СВОИ!
+BOT_TOKEN = "5932864783:AAFbN42qyJBtbuyqo3wD2i2I3OTKEdpq1qI"  # Пример: "1234567890:ABCdefGHIjklMNOpqrsTUVwxyz-123456789"
+ADMIN_ID = 5189651311  # Пример: 987654321 (только цифры, ваш Telegram ID)
 
 # Инициализация бота
 bot = Bot(token=BOT_TOKEN)
@@ -153,7 +144,7 @@ async def start_command(message: types.Message):
         [InlineKeyboardButton(text="⭐ Бонус за отзыв", callback_data="bonus")],
         [InlineKeyboardButton(text="📘 Отзыв в VK", url="https://clck.ru/3QTvTp")],
         [InlineKeyboardButton(text="🌐 Отзыв в Яндексе", url="https://clck.ru/3QTRfj")],
-        [InlineKeyboardButton(text="🗺️ Отзыв в 2ГИС", url="https://clck.ru/3QsAsL")]
+        [InlineKeyboardButton(text="🗺️ Отзыв в 2ГИС", url="https://clck.ru/3QsAsL)]
     ])
     
     text = """Здравствуйте! 😊
