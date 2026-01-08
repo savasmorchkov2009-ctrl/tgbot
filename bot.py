@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 # === НАСТРОЙКИ ===
 # ЗАМЕНИТЕ ЭТИ ЗНАЧЕНИЯ НА СВОИ!
 BOT_TOKEN = "5932864783:AAFbN42qyJBtbuyqo3wD2i2I3OTKEdpq1qI"  # Пример: "1234567890:ABCdefGHIjklMNOpqrsTUVwxyz-123456789"
-ADMIN_ID = 5189651311  # Пример: 987654321 (только цифры, ваш Telegram ID)
+ADMIN_ID = 1996778406  # Пример: 987654321 (только цифры, ваш Telegram ID)
 
 # Инициализация бота
 bot = Bot(token=BOT_TOKEN)
@@ -498,4 +498,5 @@ if __name__ == '__main__':
         logger.info("Бот остановлен вручную")
     except Exception as e:
         logger.error(f"Необработанная ошибка: {e}")
+
 
