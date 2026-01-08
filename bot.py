@@ -1,60 +1,78 @@
 import os
 import random
 import logging
-from aiogram import Bot, Dispatcher, types, F
-from aiogram.filters import Command
-from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardRemove
-from aiogram.fsm.context import FSMContext
-from aiogram.fsm.state import State, StatesGroup
-from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.utils.keyboard import InlineKeyboardBuilder
-from dotenv import load_dotenv
-
-# Загрузка переменных окружения
-load_dotenv()
+import sqlite3
+from datetime import datetime
+from aiogram import Bot, Dispatcher, types
+from aiogram.contrib.fsm_storage.memory import MemoryStorage
+from aiogram.dispatcher import FSMContext
+from aiogram.dispatcher.filters.state import State, StatesGroup
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.utils import executor
+from aiogram.utils.callback_data import CallbackData
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Получение токена из переменных окружения
-BOT_TOKEN = os.getenv("5932864783:AAFbN42qyJBtbuyqo3wD2i2I3OTKEdpq1qI")
-ADMIN_ID = int(os.getenv("5189651311"))  # ID администратора для получения заявок
+BOT_TOKEN = os.getenv("BOT_TOKEN", "ВАШ_ТОКЕН_БОТА")
+ADMIN_ID = int(os.getenv("ADMIN_ID", "ВАШ_ТЕЛЕГРАМ_ID"))
 
-# Инициализация бота и диспетчера
+# Инициализация бота
 bot = Bot(token=BOT_TOKEN)
 storage = MemoryStorage()
-dp = Dispatcher(storage=storage)
+dp = Dispatcher(bot, storage=storage)
 
 # Ссылки для кнопок (замените на свои)
 VK_REVIEW_LINK = "https://clck.ru/3QTvTp"
 YANDEX_REVIEW_LINK = "https://clck.ru/3QTRfj"
 TWOGIS_REVIEW_LINK = "https://clck.ru/3QsAsL"
 
-# Состояния FSM
-class UserState(StatesGroup):
-    waiting_for_screenshot = State()
-    waiting_for_phone = State()
-    waiting_for_bank = State()
-
-# Хранение данных пользователя (в продакшене лучше использовать БД)
-user_data = {}
-
-# Клавиатура с основными кнопками
-def get_main_keyboard():
-    keyboard = InlineKeyboardBuilder()
-    keyboard.add(
-        InlineKeyboardButton(text="⭐ Бонус за отзыв 5", callback_data="get_bonus"),
-        InlineKeyboardButton(text="📘 Отзыв в VK", url=VK_REVIEW_LINK),
-        InlineKeyboardButton(text="🌐 Отзыв в Яндексе", url=YANDEX_REVIEW_LINK),
-        InlineKeyboardButton(text="🗺️ Отзыв в 2ГИС", url=TWOGIS_REVIEW_LINK)
+# Инициализация базы данных SQLite
+def init_db():
+    conn = sqlite3.connect('bonus_bot.db')
+    cursor = conn.cursor()
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS applications (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER,
+        username TEXT,
+        full_name TEXT,
+        screenshot_id TEXT,
+        prize_amount INTEGER,
+        phone TEXT,
+        bank TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        status TEXT DEFAULT 'pending'
     )
-    keyboard.adjust(1)
-    return keyboard.as_markup()
+    ''')
+    conn.commit()
+    conn.close()
 
-# Приветственное сообщение
-@dp.message(Command("start"))
-async def cmd_start(message: Message):
+# Класс состояний
+class Form(StatesGroup):
+    screenshot = State()
+    phone = State()
+    bank = State()
+
+# Создаем callback data
+bonus_cb = CallbackData("bonus", "action")
+
+# Функция создания основной клавиатуры
+def get_main_keyboard():
+    keyboard = InlineKeyboardMarkup(row_width=1)
+    keyboard.add(
+        InlineKeyboardButton("⭐ Бонус за отзыв 5", callback_data=bonus_cb.new(action="get_bonus")),
+        InlineKeyboardButton("📘 Отзыв в VK", url=VK_REVIEW_LINK),
+        InlineKeyboardButton("🌐 Отзыв в Яндексе", url=YANDEX_REVIEW_LINK),
+        InlineKeyboardButton("🗺️ Отзыв в 2ГИС", url=TWOGIS_REVIEW_LINK)
+    )
+    return keyboard
+
+# Команда /start
+@dp.message_handler(commands=['start'])
+async def cmd_start(message: types.Message):
     welcome_text = """Здравствуйте! 😊
 
 Добро пожаловать в бот для получения бонусов!
@@ -64,9 +82,9 @@ async def cmd_start(message: Message):
     
     await message.answer(welcome_text, reply_markup=get_main_keyboard())
 
-# Обработка нажатия кнопки "Бонус за отзыв"
-@dp.callback_query(F.data == "get_bonus")
-async def process_bonus(callback: types.CallbackQuery, state: FSMContext):
+# Обработка callback запросов
+@dp.callback_query_handler(bonus_cb.filter(action="get_bonus"))
+async def process_bonus(callback_query: types.CallbackQuery):
     instructions = """⭐ Как получить бонус:
 
 1. Оставьте отзыв на ⭐️⭐️⭐️⭐️⭐️ о нашем сервисе (Авито, Суточно, Островок, Озон, ВК, Яндекс)
@@ -77,28 +95,24 @@ async def process_bonus(callback: types.CallbackQuery, state: FSMContext):
 
 Отправьте скриншот отзыва:"""
     
-    await callback.message.edit_text(instructions)
-    await state.set_state(UserState.waiting_for_screenshot)
-    await callback.answer()
+    await callback_query.message.edit_text(instructions)
+    await Form.screenshot.set()
+    await callback_query.answer()
 
 # Обработка скриншота
-@dp.message(UserState.waiting_for_screenshot, F.photo)
-async def process_screenshot(message: Message, state: FSMContext):
-    # Генерируем случайную сумму от 150 до 200
+@dp.message_handler(state=Form.screenshot, content_types=['photo'])
+async def process_screenshot(message: types.Message, state: FSMContext):
+    # Генерируем случайную сумму
     prize_amount = random.randint(150, 200)
     
-    # Сохраняем данные пользователя
-    user_data[message.from_user.id] = {
-        "user_id": message.from_user.id,
-        "username": message.from_user.username,
-        "full_name": message.from_user.full_name,
-        "screenshot_id": message.photo[-1].file_id,
-        "prize_amount": prize_amount,
-        "phone": None,
-        "bank": None
-    }
+    # Сохраняем в состояние
+    async with state.proxy() as data:
+        data['user_id'] = message.from_user.id
+        data['username'] = message.from_user.username
+        data['full_name'] = message.from_user.full_name
+        data['screenshot_id'] = message.photo[-1].file_id
+        data['prize_amount'] = prize_amount
     
-    # Сообщение о принятии скриншота
     success_text = f"""✅ Отличная работа!
 
 Скриншот принят и сохранен! 
@@ -112,21 +126,20 @@ async def process_screenshot(message: Message, state: FSMContext):
 Пример: +79123456789"""
     
     await message.answer(success_text)
-    await state.set_state(UserState.waiting_for_phone)
+    await Form.next()
 
 # Обработка номера телефона
-@dp.message(UserState.waiting_for_phone, F.text)
-async def process_phone(message: Message, state: FSMContext):
+@dp.message_handler(state=Form.phone)
+async def process_phone(message: types.Message, state: FSMContext):
     phone = message.text.strip()
     
-    # Простая валидация номера телефона
+    # Валидация номера
     if not (phone.startswith('+7') or phone.startswith('8')) or len(phone.replace('+', '')) != 11:
         await message.answer("❌ Пожалуйста, введите номер телефона в правильном формате:\n+7XXXXXXXXXX или 8XXXXXXXXXX\n\nПример: +79123456789")
         return
     
-    # Сохраняем номер телефона
-    if message.from_user.id in user_data:
-        user_data[message.from_user.id]["phone"] = phone
+    async with state.proxy() as data:
+        data['phone'] = phone
     
     bank_request = """📋 Отлично! Теперь укажите ваш банк для перевода:
 
@@ -140,26 +153,40 @@ async def process_phone(message: Message, state: FSMContext):
 Отправьте название банка:"""
     
     await message.answer(bank_request)
-    await state.set_state(UserState.waiting_for_bank)
+    await Form.next()
 
-# Обработка названия банка
-@dp.message(UserState.waiting_for_bank, F.text)
-async def process_bank(message: Message, state: FSMContext):
+# Обработка банка
+@dp.message_handler(state=Form.bank)
+async def process_bank(message: types.Message, state: FSMContext):
     bank = message.text.strip()
     
-    # Сохраняем банк
-    if message.from_user.id in user_data:
-        user_data[message.from_user.id]["bank"] = bank
+    async with state.proxy() as data:
+        data['bank'] = bank
         
-        # Получаем данные пользователя
-        user_info = user_data[message.from_user.id]
+        # Сохраняем в базу данных
+        conn = sqlite3.connect('bonus_bot.db')
+        cursor = conn.cursor()
+        cursor.execute('''
+        INSERT INTO applications (user_id, username, full_name, screenshot_id, prize_amount, phone, bank)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        ''', (
+            data['user_id'],
+            data['username'],
+            data['full_name'],
+            data['screenshot_id'],
+            data['prize_amount'],
+            data['phone'],
+            data['bank']
+        ))
+        conn.commit()
+        conn.close()
         
-        # Отправляем сообщение об успешном оформлении
+        # Отправляем финальное сообщение
         final_message = f"""🎊 Поздравляем! Заявка оформлена!
 
 ✅ Данные для выплаты:
-- Сумма: {user_info['prize_amount']} рублей
-- Телефон: {user_info['phone']}
+- Сумма: {data['prize_amount']} рублей
+- Телефон: {data['phone']}
 - Банк: {bank}
 
 ⏳ Обработка выплаты:
@@ -174,23 +201,23 @@ async def process_bank(message: Message, state: FSMContext):
         
         await message.answer(final_message)
         
-        # Отправляем заявку администратору
-        await send_to_admin(user_info)
+        # Отправляем администратору
+        await send_to_admin(data)
     
-    await state.clear()
+    await state.finish()
 
 # Функция отправки заявки администратору
-async def send_to_admin(user_info):
+async def send_to_admin(data):
     admin_message = f"""📨 Новая заявка на бонус!
 
 👤 Пользователь:
-ID: {user_info['user_id']}
-Имя: {user_info['full_name']}
-Username: @{user_info['username'] if user_info['username'] else 'Не указан'}
+ID: {data['user_id']}
+Имя: {data['full_name']}
+Username: @{data['username'] if data['username'] else 'Не указан'}
 
-💰 Сумма: {user_info['prize_amount']} руб.
-📱 Телефон: {user_info['phone']}
-🏦 Банк: {user_info['bank']}
+💰 Сумма: {data['prize_amount']} руб.
+📱 Телефон: {data['phone']}
+🏦 Банк: {data['bank']}
 
 Скриншот отправлен."""
     
@@ -198,27 +225,25 @@ Username: @{user_info['username'] if user_info['username'] else 'Не указа
         # Отправляем текстовое сообщение
         await bot.send_message(ADMIN_ID, admin_message)
         
-        # Отправляем скриншот (если есть)
-        if user_info.get('screenshot_id'):
-            await bot.send_photo(ADMIN_ID, user_info['screenshot_id'], 
-                                 caption="Скриншот отзыва")
+        # Отправляем скриншот
+        await bot.send_photo(ADMIN_ID, data['screenshot_id'], 
+                           caption=f"Скриншот отзыва от {data['full_name']}")
         
-        logger.info(f"Заявка отправлена администратору для пользователя {user_info['user_id']}")
+        logger.info(f"Заявка отправлена администратору от пользователя {data['user_id']}")
     except Exception as e:
-        logger.error(f"Ошибка при отправке заявки администратору: {e}")
+        logger.error(f"Ошибка отправки админу: {e}")
 
-# Обработка текстовых сообщений не в состояниях
-@dp.message()
-async def handle_other_messages(message: Message):
+# Обработка текстовых сообщений
+@dp.message_handler(content_types=['text'])
+async def handle_text(message: types.Message):
     if message.text and not message.text.startswith('/'):
         await message.answer("Для получения бонуса нажмите на кнопку ниже или введите /start", 
                            reply_markup=get_main_keyboard())
 
-# Основная функция запуска бота
-async def main():
+# Главная функция
+if __name__ == '__main__':
+    # Инициализация базы данных
+    init_db()
+    
     logger.info("Бот запущен...")
-    await dp.start_polling(bot)
-
-if __name__ == "__main__":
-    import asyncio
-    asyncio.run(main())
+    executor.start_polling(dp, skip_updates=True)
