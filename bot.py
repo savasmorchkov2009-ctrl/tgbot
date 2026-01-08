@@ -19,13 +19,13 @@ from telegram.ext import (
 )
 
 # ==================== НАСТРОЙКИ ====================
-BOT_TOKEN = "ВАШ_ТОКЕН_БОТА"  # ЗАМЕНИТЕ
-ADMIN_ID = 123456789  # ЗАМЕНИТЕ на ваш Telegram ID
+BOT_TOKEN = "5932864783:AAFbN42qyJBtbuyqo3wD2i2I3OTKEdpq1qI"  # ЗАМЕНИТЕ
+ADMIN_ID = 5189651311  # ЗАМЕНИТЕ на ваш Telegram ID
 
 # Ссылки для кнопок отзывов
-VK_REVIEW_LINK = "https://vk.com/ВАША_СТРАНИЦА"
-YANDEX_REVIEW_LINK = "https://yandex.ru/ВАША_СТРАНИЦА"
-TWOGIS_REVIEW_LINK = "https://2gis.ru/ВАША_СТРАНИЦА"
+VK_REVIEW_LINK = "https://clck.ru/3QTvTp"
+YANDEX_REVIEW_LINK = "https://clck.ru/3QTRfj"
+TWOGIS_REVIEW_LINK = "https://clck.ru/3QsAsL"
 
 # Состояния для ConversationHandler
 WAITING_FOR_REVIEW, WAITING_FOR_PHONE, WAITING_FOR_BANK = range(3)
@@ -804,3 +804,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+
