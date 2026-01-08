@@ -1,12 +1,9 @@
+import os
 import logging
 import random
-import os
 import sqlite3
-import signal
-import sys
-import time
-import asyncio
-from datetime import datetime, timedelta
+from datetime import datetime
+from flask import Flask, request, jsonify
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, InputFile, InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardRemove
 from telegram.ext import (
     Application,
@@ -19,8 +16,8 @@ from telegram.ext import (
 )
 
 # ==================== НАСТРОЙКИ ====================
-BOT_TOKEN = "5932864783:AAFbN42qyJBtbuyqo3wD2i2I3OTKEdpq1qI"  # ЗАМЕНИТЕ
-ADMIN_ID = 5189651311  # ЗАМЕНИТЕ на ваш Telegram ID
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "5932864783:AAFbN42qyJBtbuyqo3wD2i2I3OTKEdpq1qI")
+ADMIN_ID = int(os.environ.get("ADMIN_ID", 5189651311))  # Ваш Telegram ID
 
 # Ссылки для кнопок отзывов
 VK_REVIEW_LINK = "https://clck.ru/3QTvTp"
@@ -37,55 +34,15 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Папка для сохранения скриншотов
-SCREENSHOTS_FOLDER = "screenshots"
-os.makedirs(SCREENSHOTS_FOLDER, exist_ok=True)
-
-# ==================== ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ====================
-bot_start_time = datetime.now()
-total_requests_this_session = 0
-bot_restart_count = 0
-application_instance = None  # Глобальная переменная для экземпляра Application
-
-# ==================== ОБРАБОТЧИКИ СИГНАЛОВ ====================
-def signal_handler(signum, frame):
-    """Graceful shutdown при получении сигналов"""
-    logger.info(f"Получен сигнал {signum}. Завершаем работу...")
-    
-    # Останавливаем бота перед выходом
-    if application_instance:
-        logger.info("Останавливаем приложение бота...")
-        # Используем asyncio для асинхронной остановки
-        try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                loop.create_task(application_instance.stop())
-                loop.create_task(application_instance.shutdown())
-        except:
-            pass
-    
-    sys.exit(0)
-
-signal.signal(signal.SIGINT, signal_handler)
-signal.signal(signal.SIGTERM, signal_handler)
-
-# ==================== ФУНКЦИИ МОНИТОРИНГА ====================
-def get_free_space():
-    """Получение информации о свободном месте на диске"""
-    try:
-        import shutil
-        total, used, free = shutil.disk_usage(".")
-        free_gb = free / (1024**3)
-        return round(free_gb, 2)
-    except:
-        return "N/A"
+# Создаем Flask приложение для Bothost
+app = Flask(__name__)
 
 # ==================== БАЗА ДАННЫХ ====================
 def get_db_connection():
     """Создание подключения к базе данных"""
     try:
         conn = sqlite3.connect('requests.db', timeout=10)
-        conn.row_factory = sqlite3.Row  # Для доступа к колонкам по имени
+        conn.row_factory = sqlite3.Row
         return conn
     except Exception as e:
         logger.error(f"Ошибка подключения к БД: {e}")
@@ -95,7 +52,6 @@ def init_database():
     """Инициализация базы данных"""
     conn = get_db_connection()
     if not conn:
-        logger.error("Не удалось подключиться к БД")
         return False
     
     try:
@@ -116,15 +72,8 @@ def init_database():
                       admin_id INTEGER,
                       admin_username TEXT)''')
         
-        c.execute('''CREATE TABLE IF NOT EXISTS daily_stats
-                     (date DATE PRIMARY KEY,
-                      total_requests INTEGER DEFAULT 0,
-                      approved_requests INTEGER DEFAULT 0,
-                      rejected_requests INTEGER DEFAULT 0,
-                      total_amount INTEGER DEFAULT 0)''')
-        
         conn.commit()
-        logger.info("✅ База данных успешно инициализирована")
+        logger.info("✅ База данных инициализирована")
         return True
         
     except Exception as e:
@@ -136,7 +85,6 @@ def init_database():
 
 def add_request(user_data):
     """Добавление новой заявки в БД"""
-    global total_requests_this_session
     conn = get_db_connection()
     if not conn:
         return None
@@ -150,15 +98,9 @@ def add_request(user_data):
                    user_data['phone'], user_data['bank'], user_data['prize_amount'],
                    user_data.get('file_path'), 'pending', datetime.now()))
         
-        today = datetime.now().date()
-        c.execute('''INSERT OR IGNORE INTO daily_stats (date) VALUES (?)''', (today,))
-        c.execute('''UPDATE daily_stats SET total_requests = total_requests + 1 WHERE date = ?''', (today,))
-        
         conn.commit()
         request_id = c.lastrowid
-        
-        total_requests_this_session += 1
-        logger.info(f"✅ Заявка #{request_id} добавлена в БД. Всего за сессию: {total_requests_this_session}")
+        logger.info(f"✅ Заявка #{request_id} добавлена в БД")
         return request_id
         
     except Exception as e:
@@ -169,19 +111,6 @@ def add_request(user_data):
             conn.close()
 
 # ==================== ОТПРАВКА ЗАЯВКИ АДМИНИСТРАТОРУ ====================
-async def download_file(bot, file_id, user_id):
-    """Скачивает файл и сохраняет на компьютер"""
-    try:
-        file = await bot.get_file(file_id)
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"{SCREENSHOTS_FOLDER}/user_{user_id}_{timestamp}.jpg"
-        await file.download_to_drive(filename)
-        logger.info(f"📸 Файл сохранен: {filename}")
-        return filename
-    except Exception as e:
-        logger.error(f"❌ Ошибка скачивания файла: {e}")
-        return None
-
 async def send_to_admin(bot, user_data, request_id):
     """Отправляет заявку администратору в Telegram"""
     try:
@@ -207,18 +136,6 @@ async def send_to_admin(bot, user_data, request_id):
             text=admin_message,
             parse_mode='Markdown'
         )
-        
-        # Если есть скриншот, отправляем его
-        if user_data.get('file_path') and os.path.exists(user_data['file_path']):
-            try:
-                with open(user_data['file_path'], 'rb') as photo:
-                    await bot.send_photo(
-                        chat_id=ADMIN_ID,
-                        photo=InputFile(photo),
-                        caption=f"📸 Скриншот от пользователя ID: {user_data['user_id']}"
-                    )
-            except Exception as e:
-                logger.error(f"❌ Ошибка отправки скриншота админу: {e}")
         
         # Добавляем кнопки действий для админа
         keyboard = [
@@ -414,24 +331,17 @@ async def bonus_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_review_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработка скриншота"""
     user = update.effective_user
-    bot = context.bot
     
     try:
         file_id = None
-        filename = None
         
         if update.message.photo:
-            photo = update.message.photo[-1]
-            file_id = photo.file_id
-            filename = await download_file(bot, file_id, user.id)
+            file_id = update.message.photo[-1].file_id
         elif update.message.document:
-            document = update.message.document
-            file_id = document.file_id
-            filename = await download_file(bot, file_id, user.id)
+            file_id = update.message.document.file_id
         
         if file_id:
             context.user_data['file_id'] = file_id
-            context.user_data['file_path'] = filename
             prize_amount = random.randint(150, 200)
             context.user_data['prize_amount'] = prize_amount
             
@@ -502,7 +412,7 @@ async def handle_bank(update: Update, context: ContextTypes.DEFAULT_TYPE):
         'bank': bank,
         'prize_amount': context.user_data['prize_amount'],
         'timestamp': datetime.now(),
-        'file_path': context.user_data.get('file_path')
+        'file_path': None
     }
     
     # Сохраняем в БД и получаем ID заявки
@@ -557,44 +467,11 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 1. Нажмите "🎁 Бонус за отзыв ⭐⭐⭐⭐⭐"
 2. Отправьте скриншот
 3. Укажите телефон и банк
+
+**Команды администратора:**
+/admin - Панель администратора
     """
     await update.message.reply_text(help_text, parse_mode='Markdown')
-
-async def my_requests(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показать мои заявки"""
-    user_id = update.effective_user.id
-    
-    try:
-        conn = get_db_connection()
-        if not conn:
-            await update.message.reply_text("❌ Ошибка подключения к БД.")
-            return
-        
-        c = conn.cursor()
-        c.execute('''SELECT * FROM requests WHERE user_id = ? ORDER BY created_at DESC LIMIT 5''', (user_id,))
-        rows = c.fetchall()
-        conn.close()
-        
-        if not rows:
-            await update.message.reply_text("📭 У вас еще нет заявок.")
-            return
-        
-        text = "📋 **Ваши последние заявки:**\n\n"
-        for row in rows:
-            req_id, _, _, full_name, phone, bank, amount, _, status, created_at, *_ = row
-            created = datetime.strptime(created_at, '%Y-%m-%d %H:%M:%S') if isinstance(created_at, str) else created_at
-            
-            status_icons = {'pending': '⏳', 'approved': '✅', 'rejected': '❌'}
-            text += f"**Заявка #{req_id}** {status_icons.get(status, '❓')}\n"
-            text += f"💰 {amount} руб | 🏦 {bank}\n"
-            text += f"📅 {created.strftime('%d.%m.%Y %H:%M')}\n"
-            text += f"🔸 Статус: {status}\n"
-            text += "─" * 20 + "\n"
-        
-        await update.message.reply_text(text, parse_mode='Markdown')
-    except Exception as e:
-        logger.error(f"Ошибка получения заявок: {e}")
-        await update.message.reply_text("❌ Ошибка получения данных. Попробуйте позже.")
 
 async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Панель администратора"""
@@ -619,10 +496,6 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         conn.close()
         
         if row:
-            uptime = datetime.now() - bot_start_time
-            hours, remainder = divmod(uptime.seconds, 3600)
-            minutes, _ = divmod(remainder, 60)
-            
             stats_text = f"""
 👑 **Панель администратора**
 
@@ -633,11 +506,6 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 ├ Отклонены: {row['rejected'] or 0}
 └ Общая сумма: {row['total_amount'] or 0} руб
 
-📈 **Система:**
-├ Аптайм: {uptime.days}д {hours}ч {minutes}м
-├ Заявок/сессия: {total_requests_this_session}
-└ Свободно: {get_free_space()} ГБ
-
 💡 **Действия:**
 - Все новые заявки приходят сюда автоматически
 - Используйте кнопки под сообщениями для обработки
@@ -647,161 +515,118 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Ошибка получения статистики: {e}")
         await update.message.reply_text("❌ Ошибка получения статистики.")
 
-# ==================== ГЛАВНАЯ ФУНКЦИЯ ====================
-async def main_async():
-    """Асинхронная основная функция"""
-    global application_instance, bot_restart_count
+# ==================== СОЗДАНИЕ И НАСТРОЙКА БОТА ====================
+def setup_application():
+    """Создание и настройка приложения бота"""
+    # Создаем приложение
+    application = Application.builder().token(BOT_TOKEN).build()
     
-    max_retries = 100  # Максимальное количество перезапусков
-    retry_delay = 30   # Задержка между перезапусками в секундах
+    # Инициализация БД
+    init_database()
     
-    while bot_restart_count < max_retries:
+    # Обработка кнопок платформ
+    application.add_handler(MessageHandler(
+        filters.TEXT & filters.Regex('^(📝 Отзыв в VK|🔍 Отзыв в Яндексе|🗺️ Отзыв в 2ГИС)$'), 
+        handle_platform_review
+    ))
+    
+    # ConversationHandler для основного диалога
+    conv_handler = ConversationHandler(
+        entry_points=[
+            MessageHandler(filters.TEXT & filters.Regex('^🎁 Бонус за отзыв ⭐⭐⭐⭐⭐$'), bonus_button),
+            CommandHandler('start', start)
+        ],
+        states={
+            WAITING_FOR_REVIEW: [
+                MessageHandler(filters.PHOTO | filters.Document.IMAGE, handle_review_screenshot),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, 
+                              lambda u, c: u.message.reply_text("Отправьте скриншот отзыва"))
+            ],
+            WAITING_FOR_PHONE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_phone)
+            ],
+            WAITING_FOR_BANK: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_bank)
+            ],
+        },
+        fallbacks=[
+            CommandHandler('cancel', cancel),
+            CommandHandler('start', start),
+            CommandHandler('help', help_command)
+        ],
+    )
+    
+    # Добавляем обработчики
+    application.add_handler(conv_handler)
+    application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("admin", admin_panel))
+    
+    # Обработчик callback кнопок админа
+    application.add_handler(CallbackQueryHandler(handle_admin_callback, pattern="^approve_|^reject_"))
+    
+    return application
+
+# Создаем приложение один раз при запуске
+application = setup_application()
+
+# ==================== FLASK РОУТЫ ДЛЯ BOTHOST ====================
+
+@app.route('/')
+def home():
+    """Главная страница для проверки работы"""
+    return jsonify({
+        "status": "online",
+        "service": "Telegram Bot Webhook",
+        "timestamp": datetime.now().isoformat()
+    })
+
+@app.route('/webhook', methods=['POST'])
+async def webhook():
+    """Обработчик webhook от Telegram"""
+    if request.headers.get('content-type') == 'application/json':
+        json_string = request.get_data().decode('utf-8')
+        update = Update.de_json(json_string, application.bot)
+        
         try:
-            logger.info(f"🤖 Запуск бота (попытка #{bot_restart_count + 1})")
-            
-            # Инициализация БД
-            if not init_database():
-                logger.error("Не удалось инициализировать БД")
-                await asyncio.sleep(retry_delay)
-                bot_restart_count += 1
-                continue
-            
-            # Создаем приложение
-            application_instance = Application.builder().token(BOT_TOKEN).build()
-            
-            # Обработка кнопок платформ
-            application_instance.add_handler(MessageHandler(
-                filters.TEXT & filters.Regex('^(📝 Отзыв в VK|🔍 Отзыв в Яндексе|🗺️ Отзыв в 2ГИС)$'), 
-                handle_platform_review
-            ))
-            
-            # ConversationHandler для основного диалога
-            conv_handler = ConversationHandler(
-                entry_points=[
-                    MessageHandler(filters.TEXT & filters.Regex('^🎁 Бонус за отзыв ⭐⭐⭐⭐⭐$'), bonus_button),
-                    CommandHandler('start', start)
-                ],
-                states={
-                    WAITING_FOR_REVIEW: [
-                        MessageHandler(filters.PHOTO | filters.Document.IMAGE, handle_review_screenshot),
-                        MessageHandler(filters.TEXT & ~filters.COMMAND, 
-                                      lambda u, c: u.message.reply_text("Отправьте скриншот отзыва"))
-                    ],
-                    WAITING_FOR_PHONE: [
-                        MessageHandler(filters.TEXT & ~filters.COMMAND, handle_phone)
-                    ],
-                    WAITING_FOR_BANK: [
-                        MessageHandler(filters.TEXT & ~filters.COMMAND, handle_bank)
-                    ],
-                },
-                fallbacks=[
-                    CommandHandler('cancel', cancel),
-                    CommandHandler('start', start),
-                    CommandHandler('help', help_command)
-                ],
-            )
-            
-            # Добавляем обработчики
-            application_instance.add_handler(conv_handler)
-            application_instance.add_handler(CommandHandler("help", help_command))
-            application_instance.add_handler(CommandHandler("start", start))
-            application_instance.add_handler(CommandHandler("myrequests", my_requests))
-            application_instance.add_handler(CommandHandler("admin", admin_panel))
-            
-            # Обработчик callback кнопок админа
-            application_instance.add_handler(CallbackQueryHandler(handle_admin_callback, pattern="^approve_|^reject_"))
-            
-            # Запускаем бота
-            bot_restart_count += 1
-            logger.info(f"✅ Бот запущен! Ожидаем сообщений...")
-            
-            # Отправляем уведомление админу о запуске
-            try:
-                startup_message = f"""
-🚀 **Бот запущен**
-
-✅ Бот успешно запущен
-🔄 Перезапуск #{bot_restart_count}
-⏰ Время: {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}
-                """
-                await application_instance.bot.send_message(
-                    chat_id=ADMIN_ID,
-                    text=startup_message,
-                    parse_mode='Markdown'
-                )
-            except Exception as e:
-                logger.error(f"Не удалось отправить уведомление о запуске: {e}")
-            
-            # Основной цикл работы бота
-            await application_instance.run_polling()
-            
-        except KeyboardInterrupt:
-            logger.info("Бот остановлен пользователем (Ctrl+C)")
-            break
-            
+            await application.initialize()
+            await application.process_update(update)
+            return jsonify({"status": "ok"})
         except Exception as e:
-            logger.critical(f"КРИТИЧЕСКАЯ ОШИБКА: {e}")
-            
-            # Отправляем уведомление админу об ошибке
-            try:
-                error_message = f"""
-🔴 **Бот упал с ошибкой**
-
-❌ Ошибка: {str(e)[:100]}
-🔄 Перезапуск через {retry_delay} секунд...
-📅 Время: {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}
-                """
-                # Используем requests для отправки, если бот не работает
-                import requests
-                requests.post(
-                    f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-                    json={
-                        "chat_id": ADMIN_ID,
-                        "text": error_message,
-                        "parse_mode": "Markdown"
-                    },
-                    timeout=10
-                )
-            except:
-                pass
-            
-            # Ждем перед перезапуском
-            logger.info(f"Перезапуск через {retry_delay} секунд...")
-            await asyncio.sleep(retry_delay)
-            
-            # Очищаем старый event loop при перезапуске
-            try:
-                if application_instance:
-                    await application_instance.stop()
-                    await application_instance.shutdown()
-                    application_instance = None
-            except:
-                pass
+            logger.error(f"Ошибка обработки обновления: {e}")
+            return jsonify({"status": "error", "message": str(e)}), 500
     
-    logger.error(f"Достигнут максимум перезапусков ({max_retries}). Бот остановлен.")
+    return jsonify({"status": "error", "message": "Invalid content type"}), 400
 
-def main():
-    """Точка входа в программу"""
-    print("\n" + "="*60)
-    print("🤖 TELEGRAM BOT 24/7")
-    print("="*60)
-    print(f"👑 Админ ID: {ADMIN_ID}")
-    print(f"📁 Лог файл: bot.log")
-    print(f"💾 База данных: requests.db")
-    print(f"🖼️ Скриншоты: {SCREENSHOTS_FOLDER}")
-    print("="*60)
-    print("🚀 Запускаем бота с автоперезапуском...")
-    print("⚠️  Для остановки нажмите Ctrl+C")
-    print("="*60 + "\n")
-    
-    # Запускаем асинхронную основную функцию
+@app.route('/set_webhook', methods=['GET'])
+async def set_webhook():
+    """Установка webhook (вызовите один раз после деплоя)"""
     try:
-        asyncio.run(main_async())
-    except KeyboardInterrupt:
-        print("\n👋 Бот остановлен")
+        # Получаем URL вашего приложения на Bothost
+        webhook_url = f"https://{request.host}/webhook"
+        
+        # Устанавливаем webhook
+        await application.bot.set_webhook(webhook_url)
+        
+        return jsonify({
+            "status": "success",
+            "message": f"Webhook установлен: {webhook_url}"
+        })
     except Exception as e:
-        logger.critical(f"Фатальная ошибка: {e}")
+        logger.error(f"Ошибка установки webhook: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
 
+@app.route('/health')
+def health_check():
+    """Проверка здоровья приложения"""
+    return jsonify({
+        "status": "healthy",
+        "timestamp": datetime.now().isoformat(),
+        "bot_token_set": bool(BOT_TOKEN and BOT_TOKEN != "ВАШ_ТОКЕН_БОТА")
+    })
+
+# ==================== ЗАПУСК ПРИЛОЖЕНИЯ ====================
 if __name__ == '__main__':
-    main()
-
+    # Для локального тестирования
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port)
